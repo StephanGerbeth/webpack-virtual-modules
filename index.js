@@ -1,4 +1,4 @@
-var VirtualStats = require('./virtual-stats');
+var VirtualStats = require('webpack-virtual-modules/virtual-stats');
 var path = require('path');
 var debug = require('debug')('webpack-virtual-modules');
 
@@ -6,16 +6,25 @@ var inode = 45000000;
 
 function checkActivation(instance) {
   if (!instance._compiler) {
-    throw new Error("You must use this plugin only after creating webpack instance!");
+    throw new Error(
+      'You must use this plugin only after creating webpack instance!'
+    );
   }
 }
 
-function VirtualModulesPlugin(modules) {
-  this._staticModules = modules;
+function VirtualModulesPlugin(modules, handler) {
+  if (modules instanceof RegExp) {
+    this._dynamicTest = modules;
+    this._dynamicModulesHandler = handler;
+  } else {
+    this._staticModules = modules;
+  }
 }
 
 function getModulePath(filePath, compiler) {
-  return path.isAbsolute(filePath) ? filePath : path.join(compiler.context, filePath);
+  return path.isAbsolute(filePath)
+    ? filePath
+    : path.join(compiler.context, filePath);
 }
 
 VirtualModulesPlugin.prototype.writeModule = function(filePath, contents) {
@@ -44,14 +53,19 @@ VirtualModulesPlugin.prototype.writeModule = function(filePath, contents) {
   });
   var modulePath = getModulePath(filePath, self._compiler);
 
-  debug(self._compiler.name, "Write module:", modulePath, contents);
+  debug(self._compiler.name, 'Write module:', modulePath, contents);
 
   self._compiler.inputFileSystem._writeVirtualFile(modulePath, stats, contents);
-  if (self._watcher && self._watcher.watchFileSystem.watcher.fileWatchers.length) {
-    self._watcher.watchFileSystem.watcher.fileWatchers.forEach(function(fileWatcher) {
+  if (
+    self._watcher &&
+    self._watcher.watchFileSystem.watcher.fileWatchers.length
+  ) {
+    self._watcher.watchFileSystem.watcher.fileWatchers.forEach(function(
+      fileWatcher
+    ) {
       if (fileWatcher.path === modulePath) {
-        debug(self._compiler.name, "Emit file change:", modulePath, time);
-        fileWatcher.emit("change", time, null);
+        debug(self._compiler.name, 'Emit file change:', modulePath, time);
+        fileWatcher.emit('change', time, null);
       }
     });
   }
@@ -77,22 +91,38 @@ VirtualModulesPlugin.prototype.apply = function(compiler) {
       compiler.inputFileSystem.purge = function() {
         originalPurge.call(this, arguments);
         if (this._virtualFiles) {
-          Object.keys(this._virtualFiles).forEach(function(file) {
-            var data = this._virtualFiles[file];
-            setData(this._statStorage, file, [null, data.stats]);
-            setData(this._readFileStorage, file, [null, data.contents]);
-          }.bind(this));
+          Object.keys(this._virtualFiles).forEach(
+            function(file) {
+              var data = this._virtualFiles[file];
+              setData(this._statStorage, file, [null, data.stats]);
+              setData(this._readFileStorage, file, [null, data.contents]);
+            }.bind(this)
+          );
         }
       };
 
-      compiler.inputFileSystem._writeVirtualFile = function(file, stats, contents) {
+      compiler.inputFileSystem._writeVirtualFile = function(
+        file,
+        stats,
+        contents
+      ) {
         this._virtualFiles = this._virtualFiles || {};
-        this._virtualFiles[file] = {stats: stats, contents: contents};
+        this._virtualFiles[file] = { stats: stats, contents: contents };
         setData(this._statStorage, file, [null, stats]);
         setData(this._readFileStorage, file, [null, contents]);
       };
     }
-  }
+  };
+
+  var beforeResolversHook = function(resource) {
+    if (self._dynamicTest && self._dynamicTest.test(resource.request)) {
+      const { path, file } = self._dynamicModulesHandler(
+        resource,
+        self._dynamicTest
+      );
+      self.writeModule(path, file);
+    }
+  };
 
   var afterResolversHook = function() {
     if (self._staticModules) {
@@ -101,21 +131,30 @@ VirtualModulesPlugin.prototype.apply = function(compiler) {
       });
       delete self._staticModules;
     }
-  }
+  };
 
   var watchRunHook = function(watcher, callback) {
     self._watcher = watcher.compiler || watcher;
     callback();
-  }
+  };
 
   if (compiler.hooks) {
-    compiler.hooks.afterEnvironment.tap('VirtualModulesPlugin', afterEnvironmentHook);
-    compiler.hooks.afterResolvers.tap('VirtualModulesPlugin', afterResolversHook);
+    compiler.hooks.afterEnvironment.tap(
+      'VirtualModulesPlugin',
+      afterEnvironmentHook
+    );
+    compiler.hooks.normalModuleFactory.tap('VirtualModulesPlugin', nmf => {
+      nmf.hooks.beforeResolve.tap('VirtualModulesPlugin', beforeResolversHook);
+    });
+    compiler.hooks.afterResolvers.tap(
+      'VirtualModulesPlugin',
+      afterResolversHook
+    );
     compiler.hooks.watchRun.tapAsync('VirtualModulesPlugin', watchRunHook);
   } else {
-    compiler.plugin("after-environment", afterEnvironmentHook);
-    compiler.plugin("after-resolvers", afterResolversHook);
-    compiler.plugin("watch-run", watchRunHook);
+    compiler.plugin('after-environment', afterEnvironmentHook);
+    compiler.plugin('after-resolvers', afterResolversHook);
+    compiler.plugin('watch-run', watchRunHook);
   }
 };
 
